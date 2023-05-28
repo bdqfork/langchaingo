@@ -2,7 +2,9 @@ package chains
 
 import (
 	"context"
+	"reflect"
 
+	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/memory"
 	"github.com/tmc/langchaingo/outputparser"
@@ -13,8 +15,9 @@ import (
 const _llmChainDefaultOutputKey = "text"
 
 type LLMChain struct {
-	prompt       prompts.PromptTemplate
-	llm          llms.LLM
+	prompt prompts.PromptTemplate
+	llm    llms.LLM
+
 	Memory       schema.Memory
 	OutputParser schema.OutputParser[any]
 
@@ -26,8 +29,9 @@ var _ Chain = &LLMChain{}
 // NewLLMChain creates a new LLMChain with an llm and a prompt.
 func NewLLMChain(llm llms.LLM, prompt prompts.PromptTemplate) *LLMChain {
 	chain := &LLMChain{
-		prompt:       prompt,
-		llm:          llm,
+		prompt: prompt,
+		llm:    llm,
+
 		OutputParser: outputparser.NewSimple(),
 		Memory:       memory.NewSimple(),
 
@@ -41,14 +45,25 @@ func NewLLMChain(llm llms.LLM, prompt prompts.PromptTemplate) *LLMChain {
 // the output from the llm with the output parser. This function should not be called
 // directly, use rather the Call or Run function if the prompt only requires one input
 // value.
-func (c LLMChain) Call(ctx context.Context, values map[string]any, options ...ChainCallOption) (map[string]any, error) {
+func (c LLMChain) Call(ctx context.Context, values map[string]any, options ...ChainCallOption) (output map[string]any, err error) {
+	opts := &ChainCallOptions{}
+	for _, option := range options {
+		option(opts)
+	}
+
+	callbackManager := callbacks.NewCallbackManager(opts.Callbacks)
+	callbackManager.HandleChainStart(ctx, reflect.TypeOf(c).Name(), values)
+	defer func() {
+		if err != nil {
+			callbackManager.HandleChainError(ctx, err)
+		} else {
+			callbackManager.HandleChainEnd(ctx, output)
+		}
+	}()
+
 	promptValue, err := c.prompt.FormatPrompt(values)
 	if err != nil {
 		return nil, err
-	}
-	opts := &chainCallOptions{}
-	for _, option := range options {
-		option(opts)
 	}
 
 	generateOptions := []llms.CallOption{}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/tools"
 	"github.com/tmc/langchaingo/tools/serpapi/internal"
 )
@@ -42,7 +43,7 @@ func (t Tool) Description() string {
 	"Input should be a search query."`
 }
 
-func (t Tool) Call(ctx context.Context, input string) (string, error) {
+func (t Tool) Call(ctx context.Context, input string, handlers callbacks.CallbackList) (string, error) {
 	result, err := t.client.Search(ctx, input)
 	if err != nil {
 		if errors.Is(err, internal.ErrNoGoodResult) {

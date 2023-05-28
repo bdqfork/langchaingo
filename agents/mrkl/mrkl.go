@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tmc/langchaingo/agents"
+	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
@@ -81,6 +82,7 @@ func (a *OneShotZeroAgent) Plan(
 	ctx context.Context,
 	intermediateSteps []schema.AgentStep,
 	inputs map[string]string,
+	callbacks callbacks.CallbackList,
 ) ([]schema.AgentAction, *schema.AgentFinish, error) {
 	fullInputs := make(map[string]any, len(inputs))
 	for key, value := range inputs {
@@ -95,6 +97,7 @@ func (a *OneShotZeroAgent) Plan(
 		a.Chain,
 		fullInputs,
 		chains.WithStopWords([]string{"\nObservation:", "\n\tObservation:"}),
+		chains.WithCallbacks(callbacks),
 	)
 	if err != nil {
 		return nil, nil, err

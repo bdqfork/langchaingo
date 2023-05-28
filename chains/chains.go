@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/schema"
 )
 
@@ -21,19 +22,26 @@ type Chain interface {
 	GetOutputKeys() []string
 }
 
-type chainCallOptions struct {
+type ChainCallOptions struct {
 	StopWords []string
+	Callbacks callbacks.CallbackList
 }
 
 // WithStopWords is a ChainCallOption that can be used to set the stop words of the chain.
 func WithStopWords(stopWords []string) ChainCallOption {
-	return func(options *chainCallOptions) {
+	return func(options *ChainCallOptions) {
 		options.StopWords = stopWords
 	}
 }
 
+func WithCallbacks(handlers callbacks.CallbackList) ChainCallOption {
+	return func(options *ChainCallOptions) {
+		options.Callbacks = handlers
+	}
+}
+
 // ChainCallOption is a function that can be used to modify the behavior of the Call function.
-type ChainCallOption func(*chainCallOptions)
+type ChainCallOption func(*ChainCallOptions)
 
 // Call is the function used for calling chains.
 func Call(ctx context.Context, c Chain, inputValues map[string]any, options ...ChainCallOption) (map[string]any, error) { //nolint: lll

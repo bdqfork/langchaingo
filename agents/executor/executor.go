@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/tmc/langchaingo/agents"
+	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/memory"
 	"github.com/tmc/langchaingo/schema"
@@ -31,7 +32,12 @@ func New(agent agents.Agent, tools []tools.Tool, maxIterations int) Executor {
 	}
 }
 
-func (e Executor) Call(ctx context.Context, inputValues map[string]any, _ ...chains.ChainCallOption) (map[string]any, error) { //nolint:lll
+func (e Executor) Call(ctx context.Context, inputValues map[string]any, chainCallOptions ...chains.ChainCallOption) (output map[string]any, err error) { //nolint:lll
+	opts := &chains.ChainCallOptions{}
+	for _, option := range chainCallOptions {
+		option(opts)
+	}
+
 	inputs, err := inputsToString(inputValues)
 	if err != nil {
 		return nil, err
@@ -41,7 +47,7 @@ func (e Executor) Call(ctx context.Context, inputValues map[string]any, _ ...cha
 	steps := make([]schema.AgentStep, 0)
 	iterations := 0
 	for iterations < e.MaxIterations {
-		actions, finish, err := e.Agent.Plan(ctx, steps, inputs)
+		actions, finish, err := e.Agent.Plan(ctx, steps, inputs, opts.Callbacks)
 		if err != nil {
 			return nil, err
 		}
@@ -54,7 +60,10 @@ func (e Executor) Call(ctx context.Context, inputValues map[string]any, _ ...cha
 			return finish.ReturnValues, nil
 		}
 
+		callbackManager := callbacks.NewCallbackManager(opts.Callbacks)
 		for _, action := range actions {
+			callbackManager.HandleAgentAction(ctx, action)
+
 			tool, ok := nameToTool[action.Tool]
 			if !ok {
 				steps = append(steps, schema.AgentStep{
@@ -64,7 +73,7 @@ func (e Executor) Call(ctx context.Context, inputValues map[string]any, _ ...cha
 				continue
 			}
 
-			observation, err := tool.Call(ctx, action.ToolInput)
+			observation, err := tool.Call(ctx, action.ToolInput, opts.Callbacks)
 			if err != nil {
 				return nil, err
 			}

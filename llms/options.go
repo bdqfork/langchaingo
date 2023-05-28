@@ -1,5 +1,7 @@
 package llms
 
+import "github.com/tmc/langchaingo/callbacks"
+
 // CallOption is a function that configures a CallOptions.
 type CallOption func(*CallOptions)
 
@@ -13,6 +15,8 @@ type CallOptions struct {
 	Temperature float64 `json:"temperature"`
 	// StopWords is a list of words to stop on.
 	StopWords []string `json:"stop_words"`
+	// Handlers is used to track input and output.
+	Handlers callbacks.CallbackList
 }
 
 // WithModel is an option for LLM.Call.
