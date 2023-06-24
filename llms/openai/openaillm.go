@@ -3,11 +3,21 @@ package openai
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 
+	openai "github.com/sashabaranov/go-openai"
+
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai/internal/openaiclient"
 	"github.com/tmc/langchaingo/schema"
+)
+
+const (
+	defaultChatModel       = "gpt-3.5-turbo"
+	defaultCompletionModel = "text-davinci-003"
+	defaultEmbeddingModel  = "text-embedding-ada-002"
+
+	defaultMaxTokens = 1024
 )
 
 var (
@@ -15,10 +25,12 @@ var (
 	ErrMissingToken  = errors.New("missing the OpenAI API key, set it in the OPENAI_API_KEY environment variable")
 
 	ErrUnexpectedResponseLength = errors.New("unexpected length of response")
+
+	ErrUnexpectedEmbeddingModel = errors.New("unexpected embedding model")
 )
 
 type LLM struct {
-	client *openaiclient.Client
+	client *openai.Client
 }
 
 var _ llms.LLM = (*LLM)(nil)
@@ -38,88 +50,210 @@ func (o *LLM) Call(ctx context.Context, prompt string, options ...llms.CallOptio
 }
 
 func (o *LLM) Generate(ctx context.Context, prompts []string, options ...llms.CallOption) ([]*llms.Generation, error) {
-	opts := llms.CallOptions{}
+	opts := llms.CallOptions{MaxTokens: defaultMaxTokens}
 	for _, opt := range options {
 		opt(&opts)
 	}
-	result, err := o.client.CreateCompletion(ctx, &openaiclient.CompletionRequest{
-		Model:     opts.Model,
-		Prompt:    prompts[0],
-		MaxTokens: opts.MaxTokens,
-		StopWords: opts.StopWords,
-	})
+
+	model := opts.Model
+	if len(model) == 0 {
+		model = defaultCompletionModel
+	}
+
+	request := openai.CompletionRequest{
+		Model:            model,
+		Prompt:           prompts[0],
+		MaxTokens:        opts.MaxTokens,
+		Temperature:      float32(opts.Temperature),
+		TopP:             float32(opts.TopP),
+		Stream:           opts.StreamingFunc != nil,
+		Stop:             opts.StopWords,
+		FrequencyPenalty: float32(opts.RepetitionPenalty),
+	}
+
+	if request.Stream {
+		stream, err := o.client.CreateCompletionStream(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		defer stream.Close()
+
+		output := ""
+
+		for {
+			resp, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				return nil, err
+			}
+
+			if len(resp.Choices) == 0 {
+				return nil, ErrEmptyResponse
+			}
+
+			text := resp.Choices[0].Text
+
+			err = opts.StreamingFunc(ctx, []byte(text))
+			if err != nil {
+				return nil, err
+			}
+			output += text
+		}
+
+		return []*llms.Generation{
+			{Text: output},
+		}, nil
+	}
+
+	resp, err := o.client.CreateCompletion(ctx, request)
 	if err != nil {
 		return nil, err
 	}
+
+	if len(resp.Choices) == 0 {
+		return nil, ErrEmptyResponse
+	}
+
 	return []*llms.Generation{
-		{Text: result.Text},
+		{Text: resp.Choices[0].Text},
 	}, nil
 }
 
-type ChatMessage = openaiclient.ChatMessage
-
 // Chat requests a chat response for the given prompt.
 func (o *LLM) Chat(ctx context.Context, messages []schema.ChatMessage, options ...llms.CallOption) (*llms.ChatGeneration, error) { // nolint: lll
-	opts := llms.CallOptions{}
+	opts := llms.CallOptions{MaxTokens: defaultMaxTokens}
 	for _, opt := range options {
 		opt(&opts)
 	}
-	msgs := make([]*openaiclient.ChatMessage, len(messages))
+
+	msgs := make([]openai.ChatCompletionMessage, len(messages))
 	for i, m := range messages {
-		msg := &openaiclient.ChatMessage{
+		msg := openai.ChatCompletionMessage{
 			Content: m.GetText(),
 		}
 		typ := m.GetType()
 		switch typ {
 		case schema.ChatMessageTypeSystem:
-			msg.Role = "system"
+			msg.Role = openai.ChatMessageRoleSystem
 		case schema.ChatMessageTypeAI:
-			msg.Role = "assistant"
+			msg.Role = openai.ChatMessageRoleAssistant
 		case schema.ChatMessageTypeHuman:
-			msg.Role = "user"
+			msg.Role = openai.ChatMessageRoleUser
 		case schema.ChatMessageTypeGeneric:
-			msg.Role = "user"
+			msg.Role = openai.ChatMessageRoleUser
 			// TODO: support name
 		}
 		msgs[i] = msg
 	}
 
-	result, err := o.client.CreateChat(ctx, &openaiclient.ChatRequest{
-		Model:         opts.Model,
-		StopWords:     opts.StopWords,
-		Messages:      msgs,
-		StreamingFunc: opts.StreamingFunc,
-	})
+	model := opts.Model
+	if len(model) == 0 {
+		model = defaultChatModel
+	}
+
+	request := openai.ChatCompletionRequest{
+		Model:            model,
+		Messages:         msgs,
+		MaxTokens:        opts.MaxTokens,
+		Temperature:      float32(opts.Temperature),
+		TopP:             float32(opts.TopP),
+		Stream:           opts.StreamingFunc != nil,
+		Stop:             opts.StopWords,
+		FrequencyPenalty: float32(opts.RepetitionPenalty),
+	}
+
+	if request.Stream {
+		stream, err := o.client.CreateChatCompletionStream(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		defer stream.Close()
+
+		output := ""
+
+		for {
+			resp, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				return nil, err
+			}
+
+			if len(resp.Choices) == 0 {
+				return nil, ErrEmptyResponse
+			}
+
+			content := resp.Choices[0].Delta.Content
+
+			err = opts.StreamingFunc(ctx, []byte(content))
+			if err != nil {
+				return nil, err
+			}
+			output += content
+		}
+
+		return &llms.ChatGeneration{
+			Message: &schema.AIChatMessage{
+				Text: output,
+			},
+			// TODO: fill in generation info
+		}, nil
+	}
+
+	resp, err := o.client.CreateChatCompletion(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	if len(result.Choices) == 0 {
+
+	if len(resp.Choices) == 0 {
 		return nil, ErrEmptyResponse
 	}
+
 	return &llms.ChatGeneration{
 		Message: &schema.AIChatMessage{
-			Text: result.Choices[0].Message.Content,
+			Text: resp.Choices[0].Message.Content,
 		},
 		// TODO: fill in generation info
 	}, nil
 }
 
 // CreateEmbedding creates embeddings for the given input texts.
-func (o *LLM) CreateEmbedding(ctx context.Context, inputTexts []string) ([][]float64, error) {
-	embeddings, err := o.client.CreateEmbedding(ctx, &openaiclient.EmbeddingRequest{
+func (o *LLM) CreateEmbedding(ctx context.Context, model string, inputTexts []string) ([][]float64, error) {
+	if len(model) == 0 {
+		model = defaultEmbeddingModel
+	}
+	embeddingModel, ok := stringToEmbeddingModel[model]
+	if !ok {
+		return [][]float64{}, ErrUnexpectedEmbeddingModel
+	}
+
+	resp, err := o.client.CreateEmbeddings(ctx, openai.EmbeddingRequest{
+		Model: embeddingModel,
 		Input: inputTexts,
 	})
-
-	if len(embeddings) == 0 {
-		return [][]float64{}, ErrEmptyResponse
-	}
 
 	if err != nil {
 		return [][]float64{}, err
 	}
 
-	if len(inputTexts) != len(embeddings) {
-		return embeddings, ErrUnexpectedResponseLength
+	data := resp.Data
+
+	if len(data) == 0 {
+		return [][]float64{}, ErrEmptyResponse
+	}
+
+	if len(inputTexts) != len(data) {
+		return [][]float64{}, ErrUnexpectedResponseLength
+	}
+
+	embeddings := make([][]float64, len(data))
+	for i := range data {
+		embedding := make([]float64, len(data[i].Embedding))
+		for j := range data[i].Embedding {
+			embedding[j] = float64(data[i].Embedding[j])
+		}
+		embeddings[i] = embedding
 	}
 
 	return embeddings, nil
@@ -141,10 +275,9 @@ func New(opts ...Option) (*LLM, error) {
 		return nil, ErrMissingToken
 	}
 
-	client, err := openaiclient.New(options.token, options.model, options.baseURL)
-	if err != nil {
-		return nil, err
-	}
+	config := openai.DefaultConfig(options.token)
+	config.BaseURL = options.baseURL
+	client := openai.NewClientWithConfig(config)
 
 	return &LLM{
 		client: client,
